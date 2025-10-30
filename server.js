@@ -1,139 +1,107 @@
-const express = require('express');  // 第一行：必须有
-const cors = require('cors');
-const path = require('path');
+// server.js - 比特币价格监控后端服务器 (Node.js + Express)
+// 支持币安API获取BTC/USDT K线数据
+// 端点：/btc-1h-data (1小时周期，过去24小时+当前) 和 /btc-15min-data (15分钟周期，过去24小时+当前)
+// 运行：npm init -y; npm install express axios cors; node server.js
+
+const express = require('express');
 const axios = require('axios');
+const cors = require('cors');
 
-const app = express();  // 第二行：定义 app，防 ReferenceError
+const app = express();
+const PORT = 3000;
 
-const PORT = process.env.PORT || 3000;
-
-// 全局异常捕获（防未处理崩溃）
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
-});
-process.on('unhandledRejection', (reason) => {
-  console.error('Unhandled Rejection:', reason);
-});
-
-// 中间件（CORS + 静态文件）
-app.use(cors({ origin: '*' }));  // 允许所有（生产可限域名）
+// 中间件
+app.use(cors()); // 允许跨域
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '.')));  // 服务 index.html 等
 
-// 根路由（发送 HTML）
+// 币安API基础URL
+const BINANCE_API = 'https://api.binance.com/api/v3/klines';
+
+// 获取K线数据的通用函数
+async function fetchKlines(symbol, interval, limit) {
+  try {
+    const response = await axios.get(BINANCE_API, {
+      params: {
+        symbol: symbol,
+        interval: interval,
+        limit: limit
+      }
+    });
+
+    if (!response.data || !Array.isArray(response.data)) {
+      throw new Error('Invalid response from Binance API');
+    }
+
+    // 处理数据：从 [open_time, open, high, low, close, ...] 转换为对象
+    const klines = response.data.map((kline, index) => {
+      const openTime = parseInt(kline[0]); // 开盘时间戳 (ms)
+      const open = parseFloat(kline[1]);
+      const high = parseFloat(kline[2]);
+      const low = parseFloat(kline[3]);
+      const close = parseFloat(kline[4]);
+
+      // 计算变化：需要前一周期的close
+      let prevClose = null;
+      let change = 0;
+      let changePercent = 0;
+
+      if (index > 0) {
+        // 前一周期的close（数据从旧到新）
+        prevClose = parseFloat(response.data[index - 1][4]);
+        change = close - prevClose;
+        changePercent = (change / prevClose) * 100;
+      } else {
+        // 第一个周期无变化
+        prevClose = open; // 假设开盘=前收
+      }
+
+      return {
+        time: new Date(openTime).toISOString(), // ISO字符串，便于前端解析
+        open: open,
+        high: high,
+        low: low,
+        close: close,
+        prevClose: prevClose,
+        change: parseFloat(change.toFixed(2)),
+        changePercent: parseFloat(changePercent.toFixed(2)),
+        changeAmount: parseFloat(change.toFixed(2)) // 额外添加changeAmount用于前端
+      };
+    });
+
+    return klines;
+  } catch (error) {
+    console.error(`Error fetching ${interval} data:`, error.message);
+    throw error;
+  }
+}
+
+// 1小时周期端点 (过去24小时 + 当前，limit=25)
+app.get('/btc-1h-data', async (req, res) => {
+  try {
+    const data = await fetchKlines('BTCUSDT', '1h', 25);
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch 1h data' });
+  }
+});
+
+// 15分钟周期端点 (过去24小时 + 当前，limit=97，24*4=96+1)
+app.get('/btc-15min-data', async (req, res) => {
+  try {
+    const data = await fetchKlines('BTCUSDT', '15m', 97);
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch 15m data' });
+  }
+});
+
+// 健康检查端点 (可选)
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
-});
-
-// API: 1h 数据（加重试 + 错误处理）
-app.get('/api/btc-1h-data', async (req, res) => {
-  console.log('1h API called');
-  try {
-    // 先用备用 API（见步骤 2），fallback Binance
-    let response;
-    try {
-      response = await axios.get('https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=1&interval=hourly', {
-        timeout: 10000,
-        headers: { 'User-Agent': 'Vercel-BTC-Monitor/1.0' }
-      });
-      // CoinGecko 格式转换（prices: [[timestamp, price]]）
-      const prices = response.data.prices;
-      const data = prices.slice(-24).map((p, index) => {  // 最近 24 小时
-        const time = new Date(p[0]);
-        const open = index > 0 ? prices[index - 1][1] : p[1];
-        const close = p[1];
-        const change = close - open;
-        const changePercent = (change / open) * 100;
-        return {
-          time: time.toISOString(),
-          open, close,
-          change, changePercent, changeAmount: change
-        };
-      }).reverse();  // 从过去到现在
-      res.json(data);
-    } catch (fallbackErr) {
-      console.log('CoinGecko fallback to Binance');
-      response = await axios.get('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=25', {
-        timeout: 15000,
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }  // 伪装浏览器
-      });
-      const klines = response.data;
-      const data = klines.slice(0, 24).map((kline, index) => {
-        const time = new Date(kline[0]);
-        const open = parseFloat(kline[1]);
-        const close = parseFloat(kline[4]);
-        const prevClose = index > 0 ? parseFloat(klines[index - 1][4]) : open;
-        const change = close - open;
-        const changePercent = (change / open) * 100;
-        return {
-          time: time.toISOString(),
-          open, close, prevClose,
-          change, changePercent, changeAmount: change
-        };
-      });
-      res.json(data);
-    }
-  } catch (error) {
-    console.error('API error:', error.message, error.response?.status);
-    res.status(500).json({ error: `Data fetch failed: ${error.message}` });
-  }
-});
-
-// API: 15min 数据（类似，调整 interval/days）
-app.get('/api/btc-15min-data', async (req, res) => {
-  console.log('15min API called');
-  try {
-    // 用 CoinGecko 小时数据近似 15min（或 Binance 15m）
-    let response;
-    try {
-      response = await axios.get('https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=1&interval=minute', {  // 分钟间隔，但限 1 天
-        timeout: 10000,
-        headers: { 'User-Agent': 'Vercel-BTC-Monitor/1.0' }
-      });
-      const prices = response.data.prices.filter((_, i) => i % 15 === 0).slice(-96);  // 每 15 分钟取一，最近 96
-      const data = prices.map((p, index) => {
-        const time = new Date(p[0]);
-        const open = index > 0 ? prices[index - 1][1] : p[1];
-        const close = p[1];
-        const change = close - open;
-        const changePercent = (change / open) * 100;
-        return {
-          time: time.toISOString(),
-          open, close,
-          change, changePercent, changeAmount: change
-        };
-      }).reverse();
-      res.json(data);
-    } catch (fallbackErr) {
-      // Fallback to Binance 15m
-      response = await axios.get('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=15m&limit=97', {
-        timeout: 15000,
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-      });
-      // ... 同上 map 逻辑，slice(0,96)
-      const klines = response.data;
-      const data = klines.slice(0, 96).map((kline, index) => {
-        const time = new Date(kline[0]);
-        const open = parseFloat(kline[1]);
-        const close = parseFloat(kline[4]);
-        const prevClose = index > 0 ? parseFloat(klines[index - 1][4]) : open;
-        const change = close - open;
-        const changePercent = (change / open) * 100;
-        return {
-          time: time.toISOString(),
-          open, close, prevClose,
-          change, changePercent, changeAmount: change
-        };
-      });
-      res.json(data);
-    }
-  } catch (error) {
-    console.error('15min API error:', error.message);
-    res.status(500).json({ error: `Data fetch failed: ${error.message}` });
-  }
+  res.json({ message: 'Bitcoin Price Monitor Server is running!' });
 });
 
 // 启动服务器
 app.listen(PORT, () => {
-  console.log(`Server on port ${PORT}`);
+  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Endpoints: /btc-1h-data, /btc-15min-data`);
 });

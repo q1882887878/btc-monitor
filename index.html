@@ -23,7 +23,6 @@
       }
     }
   </script>
-  
   <style type="text/tailwindcss">
     @layer utilities {
       .block-shadow {
@@ -124,6 +123,14 @@
 
   <!-- 统计概览 -->
   <section class="container mx-auto px-6 py-6">
+    <!-- 偏离状态提示（仅15分钟模式） -->
+    <div id="deviationAlert" class="hidden mb-4 p-3 rounded-lg border text-center">
+      <div class="flex items-center justify-center space-x-2">
+        <i id="deviationIcon" class="fa text-lg"></i>
+        <span id="deviationMessage" class="font-semibold">偏离状态</span>
+      </div>
+    </div>
+    
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
       <div class="bg-dark-light rounded-lg p-4 block-shadow">
         <div class="text-gray-400 text-sm mb-1">当前价格 (BTC/USDT)</div>
@@ -158,29 +165,28 @@
   <main class="container mx-auto px-6 pb-12">
     <h2 class="text-lg font-semibold mb-4" id="periodTitle">最近24小时涨跌情况（1小时/格，USDT, 颜色深度表示幅度）</h2>
     
-    <!-- 图例说明 -->
-    <div class="flex flex-wrap gap-4 mb-6 text-sm">
-      <div class="flex items-center">
-        <div class="w-4 h-4 bg-gradient-to-br from-up to-green-700 rounded-sm mr-2"></div>
-        <span>上涨 (颜色越深幅度越大)</span>
-      </div>
-      <div class="flex items-center">
-        <div class="w-4 h-4 bg-gradient-to-br from-down to-red-700 rounded-sm mr-2"></div>
-        <span>下跌 (颜色越深幅度越大)</span>
-      </div>
+<!-- 图例说明 -->
+<div class="flex flex-wrap gap-4 mb-6 text-sm">
+  <div class="flex items-center">
+    <div class="w-4 h-4 bg-gradient-to-br from-up to-green-700 rounded-sm mr-2"></div>
+    <span>上涨 (颜色越深幅度越大)</span>
+  </div>
+  <div class="flex items-center">
+    <div class="w-4 h-4 bg-gradient-to-br from-down to-red-700 rounded-sm mr-2"></div>
+    <span>下跌 (颜色越深幅度越大)</span>
+  </div>
+</div>
+
+<!-- 固定格子面板（动态调整布局） -->
+<div id="gridBlocks" class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-12 gap-3">
+  <!-- 加载状态 -->
+  <div class="col-span-full flex justify-center items-center py-12">
+    <div class="text-center">
+      <i class="fa fa-circle-o-notch fa-spin text-blue-400 text-3xl mb-3"></i>
+      <p class="text-gray-400">加载数据中...</p>
     </div>
-    
-    <!-- 固定格子面板（动态调整布局） -->
-    <div id="gridBlocks" class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-12 gap-3">
-      <!-- 加载状态 -->
-      <div class="col-span-full flex justify-center items-center py-12">
-        <div class="text-center">
-          <i class="fa fa-circle-o-notch fa-spin text-blue-400 text-3xl mb-3"></i>
-          <p class="text-gray-400">加载数据中...</p>
-        </div>
-      </div>
-    </div>
-  </main>
+  </div>
+</div>  </main>
 
   <!-- 底部信息 -->
   <footer class="bg-dark-light py-4 border-t border-gray-700">
@@ -221,43 +227,48 @@
     const refreshCooldown = 10;
     let gridData = { '1h': null, '15min': null }; // 缓存两种周期数据
 
-    // 生成备用模拟数据（根据当前周期）
+    // 生成备用模拟数据（根据当前周期，固定24/96个完整周期）
     function generateFallbackData(period) {
       const data = [];
-      const now = new Date();
-      const totalCount = period === '1h' ? 25 : 97; // 多一个用于计算第一个change
+      const totalCount = period === '1h' ? 25 : 97; // 生成多一个用于计算第一个change
+      const expectedCount = period === '1h' ? 24 : 96; // 固定显示数量
       const intervalMinutes = period === '1h' ? 60 : 15;
       
       // 计算当前周期的起始时间
+      const now = new Date();
       const currentPeriodStart = new Date(
         now.setMinutes(period === '1h' ? 0 : Math.floor(now.getMinutes() / 15) * 15, 0, 0)
       );
       
-      let basePrice = 70000 + Math.random() * 10000; // 随机起始价格
+      let basePrice = 70000 + Math.random() * 10000; // 随机起始价格（作为第一个prevClose）
       const volatility = period === '1h' ? 5 : 2; // 1小时波动更大（±5%），15分钟±2%
       
       for (let i = totalCount - 1; i >= 0; i--) {
         const periodStart = new Date(currentPeriodStart.getTime() - i * intervalMinutes * 60000);
         
-        const open = parseFloat(basePrice.toFixed(2));
+        const prevClose = basePrice;
+        const open = parseFloat(prevClose.toFixed(2)); // 假设开盘=前收
         const changePercent = (Math.random() - 0.5) * volatility;
         const close = parseFloat((open * (1 + changePercent / 100)).toFixed(2));
+        const change = parseFloat((close - prevClose).toFixed(2));
         const high = parseFloat((Math.max(open, close) * (1 + Math.random() * 0.005)).toFixed(2));
         const low = parseFloat((Math.min(open, close) * (1 - Math.random() * 0.005)).toFixed(2));
         
         data.push({
           time: periodStart,
           open, high, low, close,
-          change: parseFloat((close - open).toFixed(2)),
-          changePercent: parseFloat(changePercent.toFixed(2))
+          prevClose,
+          change,
+          changePercent: parseFloat(changePercent.toFixed(2)),
+          changeAmount: change
         });
         
         basePrice = close;
       }
-      return data.reverse(); // 从过去到现在
+      return data.reverse().slice(1); // 从过去到现在，切片固定24/96个（跳过第一个无完整change的）
     }
 
-    // 从后端获取指定周期的数据（使用币安API代理）
+    // 从后端获取指定周期的数据（使用币安API代理，固定24/96个）
     async function fetchRealData(period) {
       try {
         const url = period === '1h' ? 'http://localhost:3000/btc-1h-data' : 'http://localhost:3000/btc-15min-data';
@@ -273,8 +284,16 @@
           throw new Error('返回数据为空');
         }
         
+        // 切片固定数量（假设后端返回多一个，跳过第一个）
+        const expectedCount = period === '1h' ? 24 : 96;
+        const processedData = rawData.slice(1, expectedCount + 1);
+        
+        if (processedData.length !== expectedCount) {
+          console.warn(`数据长度不匹配，预期${expectedCount}，实际${processedData.length}`);
+        }
+        
         // 转换时间字符串为Date对象
-        return rawData.map(item => ({
+        return processedData.map(item => ({
           ...item,
           time: new Date(item.time)
         }));
@@ -354,7 +373,7 @@
       return ((lastClose - firstPrevClose) / firstPrevClose) * 100;
     }
     
-    // 更新统计信息（根据当前周期）
+    // 更新统计信息（根据当前周期，基于涨跌额判断涨跌）
     function updateStats(data, period) {
       if (data.length === 0) return;
       
@@ -368,12 +387,12 @@
       document.getElementById('upTotal').textContent = `/${totalCount}`;
       document.getElementById('downTotal').textContent = `/${totalCount}`;
       
-      // 更新价格和统计
+      // 更新价格和统计（基于change >0 / <0）
       const latestPrice = data[data.length - 1].close;
       document.getElementById('currentPrice').textContent = `$${formatPrice(latestPrice)}`;
       
-      const upCount = data.filter(item => item.changePercent > 0).length;
-      const downCount = data.filter(item => item.changePercent < 0).length;
+      const upCount = data.filter(item => item.change > 0).length;
+      const downCount = data.filter(item => item.change < 0).length;
       
       document.getElementById('upCount').textContent = upCount;
       document.getElementById('downCount').textContent = downCount;
@@ -391,12 +410,58 @@
         totalChangeEl.className = 'text-xl font-bold text-neutral';
         totalChangeEl.textContent = '0.00%';
       }
+
+      // 15分钟模式下的偏离状态逻辑（总是显示状态）
+      const deviationAlert = document.getElementById('deviationAlert');
+      const deviationMessage = document.getElementById('deviationMessage');
+      const deviationIcon = document.getElementById('deviationIcon');
+      if (period === '15min') {
+        if (upCount >= 52) {
+          deviationAlert.className = 'mb-4 p-3 rounded-lg bg-red-600/20 border border-red-500/50 text-center';
+          deviationAlert.classList.remove('hidden');
+          deviationMessage.textContent = `上涨偏离！（${upCount}个上涨周期）`;
+          deviationMessage.className = 'font-semibold text-red-300';
+          deviationIcon.className = 'fa fa-exclamation-triangle text-red-400 text-lg';
+        } else if (downCount >= 52) {
+          deviationAlert.className = 'mb-4 p-3 rounded-lg bg-red-600/20 border border-red-500/50 text-center';
+          deviationAlert.classList.remove('hidden');
+          deviationMessage.textContent = `下跌偏离！（${downCount}个下跌周期）`;
+          deviationMessage.className = 'font-semibold text-red-300';
+          deviationIcon.className = 'fa fa-exclamation-triangle text-red-400 text-lg';
+        } else {
+          deviationAlert.className = 'mb-4 p-3 rounded-lg bg-green-600/20 border border-green-500/50 text-center';
+          deviationAlert.classList.remove('hidden');
+          deviationMessage.textContent = `偏离状态：正常（上涨${upCount}，下跌${downCount}）`;
+          deviationMessage.className = 'font-semibold text-green-300';
+          deviationIcon.className = 'fa fa-check-circle text-green-400 text-lg';
+        }
+      } else {
+        deviationAlert.classList.add('hidden');
+      }
     }
     
-    // 渲染固定格子（根据当前周期动态调整）
+    // 获取颜色不透明度（基于涨跌额，1美元也算涨，深度随绝对额增加）
+    function getColorIntensity(absChange, period) {
+      // 1h: 每50美元增加10%不透明度，max 80%
+      // 15min: 每10美元增加10%不透明度，max 80%（15min波动小）
+      const scale = period === '1h' ? 50 : 10;
+      const baseOpacity = 10; // 最小10%
+      const maxOpacity = 80;
+      const intensity = Math.min(maxOpacity, baseOpacity + (absChange / scale) * 10);
+      return Math.floor(intensity);
+    }
+    
+    // 渲染固定格子（根据当前周期动态调整，固定24/96个）
     function renderGridBlocks(data, period) {
       const container = document.getElementById('gridBlocks');
       const is1h = period === '1h';
+      const expectedCount = is1h ? 24 : 96;
+      
+      // 确保正好expectedCount个（如果后端/fallback有问题，截断或补齐，但假设正确）
+      if (data.length !== expectedCount) {
+        console.warn(`渲染数据长度不匹配，预期${expectedCount}，实际${data.length}`);
+        data = data.slice(0, expectedCount);
+      }
       
       // 根据周期调整网格布局（1小时更宽，15分钟更密集）
       container.className = is1h 
@@ -413,14 +478,17 @@
       
       data.forEach(item => {
         let bgClass, textClass, icon;
-        const absPercent = Math.abs(item.changePercent);
+        const absChange = Math.abs(item.change); // 基于涨跌额
+        const intensity = getColorIntensity(absChange, period);
         
-        if (item.changePercent > 0) {
-          bgClass = `bg-gradient-to-br from-up/20 to-green-700/40 border-up/40`;
+        if (item.change > 0) {
+          // 涨1美元也绿色，深度随absChange
+          bgClass = `bg-gradient-to-br from-up/10 to-green-700/[${(40 + intensity / 2) / 100}] border-up/[${(40 + intensity / 5) / 100}]`;
           textClass = 'text-up';
           icon = '<i class="fa fa-arrow-up text-sm"></i>';
-        } else if (item.changePercent < 0) {
-          bgClass = `bg-gradient-to-br from-down/20 to-red-700/40 border-down/40`;
+        } else if (item.change < 0) {
+          // 跌1美元也红色
+          bgClass = `bg-gradient-to-br from-down/10 to-red-700/[${(40 + intensity / 2) / 100}] border-down/[${(40 + intensity / 5) / 100}]`;
           textClass = 'text-down';
           icon = '<i class="fa fa-arrow-down text-sm"></i>';
         } else {
@@ -446,7 +514,7 @@
           <div class="font-medium mb-1 change-text ${!is1h ? 'text-xs-15min' : 'text-xs'}">${formatGridTime(item.time, period)}</div>
           <div class="mb-1 change-text">${icon}</div>
           <div class="${textClass} font-bold change-text ${!is1h ? 'text-xs' : 'text-sm'}">
-            ${item.changePercent > 0 ? '+' : ''}${item.changePercent.toFixed(2)}%
+            ${item.change > 0 ? '+' : ''}$${item.change.toFixed(2)}
           </div>
         `;
         
@@ -560,7 +628,7 @@
           refreshBtn.classList.remove('refresh-disabled');
           cooldownEl.classList.add('hidden');
         }
-      }, 1000);
+      }, 10);
     }
     
     // 切换周期
