@@ -1,0 +1,5 @@
+# 初始化项目（生成package.json文件，一路回车默认即可）
+npm init -y
+
+# 安装项目所需的依赖包
+npm install express axios cors
